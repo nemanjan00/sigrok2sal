@@ -110,19 +110,26 @@ def digital_bits_from_packed(packed: bytes, unitsize: int, bit_index: int,
         raise ValueError(f"unsupported unitsize {unitsize}")
 
 
-def analog_voltages_to_int16(volts: np.ndarray, max_v: float) -> np.ndarray:
-    """Map ±max_v volts → int16 in the same 10V/2047 grid Logic 2 uses.
+def pick_voltage_range(volts: np.ndarray, headroom: float = 1.10
+                       ) -> tuple[float, float]:
+    """Pick a sensible (min_v, max_v) voltage range for a channel.
 
-    Logic 2's analog samples are int16 with a fixed scale where the
-    full hardware range maps to ±2047. The 35-byte channel-specific
-    header we replay from the Logic Pro 8 simulator encodes a ±10 V
-    range, so to keep the same V/raw mapping we scale by 2047/10
-    irrespective of the sigrok signal's true range. Inputs outside
-    ±max_v just clip.
+    Defaults to the data's observed range with a small headroom so the
+    signal doesn't quite touch the rails. If the data is all zero,
+    falls back to ±10 V.
     """
-    scale = 2047.0 / 10.0
-    out = np.clip(volts * scale, -2047, 2047).round().astype(np.int16)
-    return out
+    if volts.size == 0:
+        return (-10.0, 10.0)
+    mn = float(volts.min())
+    mx = float(volts.max())
+    if mn == mx == 0.0:
+        return (-10.0, 10.0)
+    if mn >= 0 and mx > 0:        # all non-negative
+        return (0.0, mx * headroom)
+    if mx <= 0 and mn < 0:        # all non-positive
+        return (mn * headroom, 0.0)
+    peak = max(abs(mn), abs(mx)) * headroom
+    return (-peak, peak)
 
 
 def main() -> int:
@@ -174,8 +181,10 @@ def main() -> int:
     # --- analog ---
     # All analog channels share a sample rate (sigrok's session abstraction);
     # in libsigrok session files, analog samples are float32 volts at the
-    # same rate as logic.
+    # same rate as logic. We pick a per-channel voltage range from the
+    # data so Logic 2 displays sensible Y-axis limits.
     n_analog_samples = 0
+    analog_voltage_ranges: list[tuple[float, float]] = []
     for i, (probe_idx, name) in enumerate(info["analog_channels"]):
         chunk_prefix = f"analog-{args.device}-{probe_idx}"
         raw = _ordered_chunks(files, chunk_prefix)
@@ -185,12 +194,15 @@ def main() -> int:
             continue
         n = len(raw) // 4
         volts = np.frombuffer(raw, dtype="<f4")[:n]
-        samples_i16 = analog_voltages_to_int16(volts, max_v=10.0)
+        vrange = pick_voltage_range(volts)
+        samples_i16 = sigrok2sal.volts_to_int16(volts, vrange)
+        analog_voltage_ranges.append(vrange)
         out_files[f"analog-{i}.bin"] = sigrok2sal.build_analog_bin(
             samples_i16.tobytes(), sample_rate=samplerate, capture_unix_ms=capture_unix_ms)
         n_analog_samples = max(n_analog_samples, n)
         print(f"  analog ch{i} ({name}): {n} samples, "
-              f"raw range [{int(samples_i16.min())}, {int(samples_i16.max())}]",
+              f"voltage range [{vrange[0]:.3f}, {vrange[1]:.3f}] V, "
+              f"int16 [{int(samples_i16.min())}, {int(samples_i16.max())}]",
               file=sys.stderr)
 
     # --- meta + trigger ---
@@ -203,6 +215,7 @@ def main() -> int:
         n_digital_samples=n_digital_samples,
         n_analog_samples=n_analog_samples,
         capture_unix_ms=capture_unix_ms,
+        analog_voltage_ranges=analog_voltage_ranges or None,
     )
     out_files["meta.json"] = json.dumps(meta).encode()
 

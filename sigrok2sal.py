@@ -216,6 +216,33 @@ def _build_pyramid(samples: list[int]) -> bytes:
     return bytes(out)
 
 
+def volts_to_int16(volts, voltage_range: tuple[float, float]):
+    """Map an array of voltages to the int16 grid the .sal format uses.
+
+    Logic 2 stores analog samples as int16 in [-2047, +2047]; the
+    voltage interpretation comes from meta.json's
+    `legacyDeviceCalibration.fullScaleVoltageRanges[ch]` (or, if absent,
+    a device default — ±10 V for the Logic Pro 8 simulator profile we
+    use as a meta template).
+
+      raw = clip( (V - midpoint) / half_range * 2047, -2047, 2047 )
+      midpoint   = (max_v + min_v) / 2
+      half_range = (max_v - min_v) / 2
+
+    `volts` may be a numpy array or any iterable of floats; returns a
+    numpy int16 array.
+    """
+    import numpy as np
+    min_v, max_v = voltage_range
+    if max_v <= min_v:
+        raise ValueError(f"voltage_range must have max > min, got {voltage_range}")
+    midpoint = (max_v + min_v) / 2.0
+    half = (max_v - min_v) / 2.0
+    arr = np.asarray(volts, dtype=np.float64)
+    scaled = (arr - midpoint) / half * 2047.0
+    return np.clip(scaled, -2047, 2047).round().astype(np.int16)
+
+
 def build_analog_bin(
     samples: bytes,
     sample_rate: float,
@@ -385,13 +412,33 @@ def build_meta_json(
     n_digital_samples: int,
     n_analog_samples: int,
     capture_unix_ms: int = 0,
+    analog_voltage_ranges: list[tuple[float, float]] | None = None,
 ) -> dict:
+    """Build a meta.json dict.
+
+    analog_voltage_ranges, if given, must be one (min_v, max_v) tuple per
+    *analog* channel in `analog_channels` order. It populates the
+    `legacyDeviceCalibration.fullScaleVoltageRanges` block so Logic 2
+    maps int16 raw values to those voltage limits. If omitted, the
+    Logic Pro 8 simulator default (±10 V) applies.
+    """
     meta = copy.deepcopy(_META_TEMPLATE)
     d = meta["data"]
     d["captureStartTime"] = {
         "unixTimeMilliseconds": int(capture_unix_ms),
         "fractionalMilliseconds": 0.0,
     }
+    if analog_voltage_ranges is not None:
+        if len(analog_voltage_ranges) != len(analog_channels):
+            raise ValueError(
+                f"analog_voltage_ranges length ({len(analog_voltage_ranges)}) "
+                f"must match analog_channels length ({len(analog_channels)})")
+        d["legacyDeviceCalibration"] = {
+            "fullScaleVoltageRanges": [
+                {"minimumVoltage": float(mn), "maximumVoltage": float(mx)}
+                for mn, mx in analog_voltage_ranges
+            ]
+        }
 
     enabled = []
     rows = []
