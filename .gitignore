@@ -1,0 +1,24 @@
+# Test / reference artifacts (user-supplied or generated)
+/samples/
+
+# Vendor / RE working trees — kept locally for reverse engineering,
+# never committed.
+/Logic-*.AppImage
+/squashfs-root/
+/libsigrok/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+.DS_Store
