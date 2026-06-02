@@ -433,10 +433,22 @@ def build_meta_json(
             raise ValueError(
                 f"analog_voltage_ranges length ({len(analog_voltage_ranges)}) "
                 f"must match analog_channels length ({len(analog_channels)})")
+        # The deserializer indexes fullScaleVoltageRanges by the global
+        # analog channel index (0..N-1 where N = total analog slots on
+        # the device), not by enabled-channel position. So we must emit
+        # one entry per device slot. The Logic Pro 8 profile used by
+        # our template has 8 analog slots — channels we don't enable get
+        # a benign default ±10 V range to keep the deserializer happy.
+        n_slots = sum(1 for c in d["legacyDevice"]["capabilities"]["channelCapabilities"]
+                      if c["type"] == "Analog")
+        ranges_by_idx: dict[int, tuple[float, float]] = dict(zip(analog_channels, analog_voltage_ranges))
         d["legacyDeviceCalibration"] = {
             "fullScaleVoltageRanges": [
-                {"minimumVoltage": float(mn), "maximumVoltage": float(mx)}
-                for mn, mx in analog_voltage_ranges
+                {
+                    "minimumVoltage": float(ranges_by_idx.get(i, (-10.0, 10.0))[0]),
+                    "maximumVoltage": float(ranges_by_idx.get(i, (-10.0, 10.0))[1]),
+                }
+                for i in range(n_slots)
             ]
         }
 
